@@ -1,177 +1,139 @@
 #include "smallsh.h"
-#include <sys/wait.h> // Include for waitpid
 
 // Global variables
-volatile pid_t foreground_pgid = -1; // Tracks the current foreground process group
-struct job jobs[MAX_JOBS];
-int job_count = 0; // Number of jobs running or stopped
+Job jobs[MAX_JOBS];
+int job_count = 0;
 
-// Handle Ctrl-C
-void handle_sigint(int sig) {
-    if (foreground_pgid > 0) {
-        killpg(foreground_pgid, SIGINT); // Kill the foreground process group
+void init_shell() {
+    signal(SIGINT, sigint_handler);  // Handle Ctrl-C
+    signal(SIGTSTP, sigtstp_handler); // Handle Ctrl-Z
+    printf("Welcome to smallsh!\n");
+}
+
+void sigint_handler(int signo) {
+    pid_t fg_pgid = tcgetpgrp(STDIN_FILENO);
+    if (fg_pgid != getpid()) {
+        kill(-fg_pgid, SIGINT);
     }
-    printf("\nCommand> "); // Show the prompt again
+    printf("\nCommand> ");
     fflush(stdout);
 }
 
-// Handle Ctrl-Z
-void handle_sigtstp(int sig) {
-    if (foreground_pgid > 0) {
-        killpg(foreground_pgid, SIGTSTP); // Stop the foreground process group
+void sigtstp_handler(int signo) {
+    pid_t fg_pgid = tcgetpgrp(STDIN_FILENO);
+    if (fg_pgid != getpid()) {
+        kill(-fg_pgid, SIGTSTP);
     }
-    printf("\nCommand> "); // Show the prompt again
+    printf("\nCommand> ");
     fflush(stdout);
 }
 
-// Add a new job to the list
-void add_job(pid_t pgid, char *cmd) {
+void add_job(pid_t pgid, const char *command) {
+    if (job_count >= MAX_JOBS) {
+        printf("Job list full!\n");
+        return;
+    }
     jobs[job_count].job_id = job_count + 1;
     jobs[job_count].pgid = pgid;
-    strncpy(jobs[job_count].command, cmd, MAX_COMMAND_LEN);
-    jobs[job_count].is_running = 1; // Job is running
+    strcpy(jobs[job_count].command, command);
+    jobs[job_count].status = 0; // Running
     job_count++;
 }
 
-// Print all current jobs
-void print_jobs() {
+void remove_job(int job_id) {
     for (int i = 0; i < job_count; i++) {
-        printf("[%d] %s %s\n", jobs[i].job_id,
-               jobs[i].is_running ? "Running" : "Stopped",
-               jobs[i].command);
+        if (jobs[i].job_id == job_id) {
+            for (int j = i; j < job_count - 1; j++) {
+                jobs[j] = jobs[j + 1];
+            }
+            job_count--;
+            return;
+        }
+    }
+    printf("Job not found!\n");
+}
+
+void list_jobs() {
+    for (int i = 0; i < job_count; i++) {
+        printf("[%d] %s (%s)\n", jobs[i].job_id, jobs[i].command,
+               jobs[i].status == 0 ? "Running" : jobs[i].status == 1 ? "Stopped" : "Terminated");
     }
 }
 
-// Bring a job to the foreground
-void bring_to_foreground(int job_id) {
-    if (job_id <= 0 || job_id > job_count) {
-        printf("Invalid job ID\n");
-        return;
+void bg_job(int job_id) {
+    for (int i = 0; i < job_count; i++) {
+        if (jobs[i].job_id == job_id && jobs[i].status == 1) {
+            kill(-jobs[i].pgid, SIGCONT);
+            jobs[i].status = 0; // Running
+            return;
+        }
     }
-    pid_t pgid = jobs[job_id - 1].pgid;
-    tcsetpgrp(STDIN_FILENO, pgid); // Give terminal control to the job
-    killpg(pgid, SIGCONT); // Continue the process
-
-    foreground_pgid = pgid; // Track the foreground job
-    int status;
-    waitpid(-pgid, &status, WUNTRACED); // Wait for it to finish or stop
-    tcsetpgrp(STDIN_FILENO, getpgrp()); // Give terminal back to the shell
-    foreground_pgid = -1;
+    printf("Job not found or not stopped!\n");
 }
 
-// Resume a job in the background
-void resume_in_background(int job_id) {
-    if (job_id <= 0 || job_id > job_count) {
-        printf("Invalid job ID\n");
-        return;
+void fg_job(int job_id) {
+    for (int i = 0; i < job_count; i++) {
+        if (jobs[i].job_id == job_id) {
+            tcsetpgrp(STDIN_FILENO, jobs[i].pgid);
+            kill(-jobs[i].pgid, SIGCONT);
+            int status;
+            waitpid(-jobs[i].pgid, &status, WUNTRACED);
+            tcsetpgrp(STDIN_FILENO, getpid());
+            if (WIFSTOPPED(status)) {
+                jobs[i].status = 1; // Stopped
+            } else {
+                remove_job(job_id); // Completed or terminated
+            }
+            return;
+        }
     }
-    pid_t pgid = jobs[job_id - 1].pgid;
-    killpg(pgid, SIGCONT); // Continue the process
-    jobs[job_id - 1].is_running = 1; // Mark it as running
-    printf("Job [%d] %s resumed in background\n", job_id, jobs[job_id - 1].command);
+    printf("Job not found!\n");
 }
 
-// Kill a job
-void terminate_job(int job_id) {
-    if (job_id <= 0 || job_id > job_count) {
-        printf("Invalid job ID\n");
-        return;
-    }
-    pid_t pgid = jobs[job_id - 1].pgid;
-    killpg(pgid, SIGKILL); // Kill the process group
-    printf("Job [%d] %s terminated\n", job_id, jobs[job_id - 1].command);
-}
-
-// Main program
 int main() {
-    // Set up signal handlers for Ctrl-C and Ctrl-Z
-    struct sigaction sa_int, sa_tstp;
-    sa_int.sa_handler = handle_sigint;
-    sigemptyset(&sa_int.sa_mask);
-    sa_int.sa_flags = SA_RESTART;
+    char input[MAXBUF];
+    pid_t pid;
+    init_shell();
 
-    sa_tstp.sa_handler = handle_sigtstp;
-    sigemptyset(&sa_tstp.sa_mask);
-    sa_tstp.sa_flags = SA_RESTART;
-
-    sigaction(SIGINT, &sa_int, NULL);
-    sigaction(SIGTSTP, &sa_tstp, NULL);
-
-    char command[MAX_COMMAND_LEN];
     while (1) {
-        printf("Command> "); // Print the shell prompt
+        printf("Command> ");
         fflush(stdout);
-
-        if (fgets(command, MAX_COMMAND_LEN, stdin) == NULL) {
-            break; // Exit if EOF is reached
+        if (fgets(input, MAXBUF, stdin) == NULL) {
+            printf("\n");
+            break;
         }
 
-        // Strip newline from command
-        command[strcspn(command, "\n")] = 0;
+        input[strcspn(input, "\n")] = 0;
 
-        // Skip empty input
-        if (strlen(command) == 0) continue;
-
-        // Split command into arguments
-        char *args[MAX_COMMAND_LEN / 2 + 1]; // Array for arguments
-        int arg_count = 0;
-        char *token = strtok(command, " ");
-        while (token != NULL) {
-            args[arg_count++] = token;
-            token = strtok(NULL, " ");
-        }
-        args[arg_count] = NULL; // Null-terminate the arguments array
-
-        // Built-in commands
-        if (strcmp(args[0], "jobs") == 0) {
-            print_jobs();
-        } else if (strcmp(args[0], "fg") == 0) {
-            if (arg_count < 2) {
-                printf("Usage: fg <job_id>\n");
-            } else {
-                int job_id = atoi(args[1]);
-                bring_to_foreground(job_id);
-            }
-        } else if (strcmp(args[0], "bg") == 0) {
-            if (arg_count < 2) {
-                printf("Usage: bg <job_id>\n");
-            } else {
-                int job_id = atoi(args[1]);
-                resume_in_background(job_id);
-            }
-        } else if (strcmp(args[0], "kill") == 0) {
-            if (arg_count < 2) {
-                printf("Usage: kill <job_id>\n");
-            } else {
-                int job_id = atoi(args[1]);
-                terminate_job(job_id);
-            }
+        if (strcmp(input, "exit") == 0) {
+            printf("Exiting smallsh...\n");
+            break;
+        } else if (strcmp(input, "jobs") == 0) {
+            list_jobs();
+        } else if (strncmp(input, "bg ", 3) == 0) {
+            bg_job(atoi(input + 3));
+        } else if (strncmp(input, "fg ", 3) == 0) {
+            fg_job(atoi(input + 3));
         } else {
-            // Handle external commands
-            pid_t pid = fork();
+            pid = fork();
             if (pid == 0) {
-                // Child process
-                setpgid(0, 0); // Create a new process group
-                execvp(args[0], args);
-                perror("Command execution failed");
+                setpgid(0, 0);
+                execlp(input, input, (char *)NULL);
+                perror("Exec failed");
                 exit(1);
             } else if (pid > 0) {
-                // Parent process
-                setpgid(pid, pid); // Set child's process group
-                if (arg_count > 1 && strcmp(args[arg_count - 1], "&") == 0) {
-                    // Background job
-                    args[arg_count - 1] = NULL; // Remove "&"
-                    printf("Started background job [%d] %s\n", job_count + 1, args[0]);
-                    add_job(pid, args[0]); // Add job to list
-                } else {
-                    // Foreground job
-                    tcsetpgrp(STDIN_FILENO, pid); // Give control to the process
-                    foreground_pgid = pid;
-
+                setpgid(pid, pid);
+                if (strchr(input, '&') == NULL) {
+                    tcsetpgrp(STDIN_FILENO, pid);
                     int status;
-                    waitpid(pid, &status, WUNTRACED); // Wait for it to finish or stop
-                    tcsetpgrp(STDIN_FILENO, getpgrp()); // Give control back to the shell
-                    foreground_pgid = -1;
+                    waitpid(pid, &status, WUNTRACED);
+                    tcsetpgrp(STDIN_FILENO, getpid());
+                    if (WIFSTOPPED(status)) {
+                        add_job(pid, input);
+                    }
+                } else {
+                    add_job(pid, input);
+                    printf("Background job started: %d\n", pid);
                 }
             } else {
                 perror("Fork failed");

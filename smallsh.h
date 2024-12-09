@@ -1,37 +1,32 @@
-
 #ifndef SMALLSH_H
 #define SMALLSH_H
 
-#include <signal.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
-#define MAX_COMMAND_LEN 1024
+#define MAXBUF 1024
 #define MAX_JOBS 100
 
-// Job info
-struct job {
-    int job_id; // Job number
-    pid_t pgid; // Process group ID
-    char command[MAX_COMMAND_LEN]; // Command string
-    int is_running; // 1 = running, 0 = stopped
-};
+typedef struct {
+    int job_id;
+    pid_t pgid;
+    char command[MAXBUF];
+    int status; // 0: running, 1: stopped, 2: terminated
+} Job;
 
-// Shared variables
-extern volatile pid_t foreground_pgid;
-extern struct job jobs[MAX_JOBS];
-extern int job_count;
-
-// Functions we'll use
-void handle_sigint(int sig);
-void handle_sigtstp(int sig);
-void add_job(pid_t pgid, char *cmd);
-void print_jobs();
-void bring_to_foreground(int job_id);
-void resume_in_background(int job_id);
-void terminate_job(int job_id);
+// Function prototypes
+void init_shell();
+void sigint_handler(int signo);
+void sigtstp_handler(int signo);
+void add_job(pid_t pgid, const char *command);
+void remove_job(int job_id);
+void list_jobs();
+void bg_job(int job_id);
+void fg_job(int job_id);
 
 #endif
