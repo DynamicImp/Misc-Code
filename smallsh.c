@@ -1,5 +1,5 @@
-
 #include "smallsh.h"
+#include <sys/wait.h> // Include for waitpid
 
 // Global variables
 volatile pid_t foreground_pgid = -1; // Tracks the current foreground process group
@@ -107,7 +107,7 @@ int main() {
         }
 
         // Strip newline from command
-        command[strcspn(command, "\n")] = 0; 
+        command[strcspn(command, "\n")] = 0;
 
         // Skip empty input
         if (strlen(command) == 0) continue;
