@@ -3,7 +3,8 @@
 
 int main() {
     for (int i = 0; i < 60; i++) {
-        sleep(1); // Sleep for 1 second
+        printf("prog1 running: %d seconds elapsed.\n", i + 1);
+        sleep(1);
     }
     return 0;
 }
